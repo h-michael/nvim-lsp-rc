@@ -1,4 +1,5 @@
 local callbacks = require('lsp.callbacks')
+local BuiltinCallbacks = require('lsp.builtin_callbacks').BuiltinCallbacks
 
 local configure = {}
 
@@ -12,25 +13,44 @@ end
 -- @param method                    (required)  The name of the method to associate with the callback
 -- @param cb                        (required)  The callback to execute (or nil to disable -- probably)
 -- @param override_default_callback (optional)  Use this as the default callback for method, overrides filetype
--- @param filetype_specific         (optional)  Use this to only have a callback executed for certain filetypes
---
--- @returns another
-configure.add_callback = function(method, cb, override_default_callback, filetype_specific)
-  if override_default_callback then
-    callbacks.set_default_callback(method, cb)
-  elseif filetype_specific ~= nil then
-    callbacks.add_filetype_callback(method, cb, filetype_specific)
-  else
-    callbacks.add_callback(method, cb)
-  end
+-- @param filetype                  (optional)  Use this to only have a callback executed for certain filetypes
+configure.add_callback = function(method, cb, filetype)
+  callbacks.add_callback(method, cb, filetype)
+end
+
+--- Set a callback that will be called whenever method is handled.
+--- If the callbacks have already been defined, those are overrided by this callback.
+-- @param method                    (required)  The name of the method to associate with the callback
+-- @param cb                        (required)  The callback to execute (or nil to disable -- probably)
+-- @param override_default_callback (optional)  Use this as the default callback for method, overrides filetype
+-- @param filetype                  (optional)  Use this to only have a callback executed for certain filetypes
+configure.set_callback = function(method, cb, filetype)
+  callbacks.set_callback(method, cb, filetype)
 end
 
 configure.set_option = function(method, option, value)
   callbacks.set_option(method, option, value)
 end
 
-configure.disable_default_callback = function(method)
-  configure.add_callback(method, nil, true)
+--- Set a builtin callback to CallbackMapping
+-- @param method               (required) The name of the lsp method to set a callback to
+configure.set_builtin_callback = function(method)
+  local builtin_callback = BuiltinCallbacks[method]
+  local callback_object = callbacks._callback_object.new(method, builtin_callback['options'])
+  callback_object:set_callback(builtin_callback['callback'])
+  callbacks._callback_mapping[method] = callback_object
+end
+
+--- Set a builtin error callback to CallbackMapping
+configure.set_builtin_error_callback = function(self)
+  self.set_builtin_callback('nvim/error_callback')
+end
+
+--- Set the all builtin callbacks to CallbackMapping
+configure.set_all_builtin_callbacks = function(self)
+  for method_name in pairs(BuiltinCallbacks) do
+    self.set_builtin_callback(method_name)
+  end
 end
 
 return configure

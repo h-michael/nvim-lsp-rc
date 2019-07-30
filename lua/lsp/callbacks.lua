@@ -1,83 +1,16 @@
--- luacheck: globals vim
--- Implements the following default callbacks:
---  textDocument/publishDiagnostics
---  notification: textDocument/didOpen
---  notification: textDocument/willSave
---  TODO: textDocument/willSaveWaitUntil
---  notification: textDocument/didSave
---  notification: textDocument/didClose
-
---  IN PROGRESS: textDocument/completion
---  TODO: completionItem/resolve
-
---  textDocument/hover
---  TODO: textDocument/signatureHelp
---  textDocument/references
---  TODO: textDocument/documentHighlight
---  TODO: textDocument/documentSymbol
---  TODO: textDocument/formatting
---  TODO: textDocument/rangeFormatting
---  TODO: textDocument/onTypeFormatting
---  textDocument/definition
---  TODO: textDocument/codeAction
---  TODO: textDocument/codeLens
---  TODO: textDocument/documentLink
---  TODO: textDocument/rename
---
---
---  TODO: codeLens/resolve
---
---  TODO: documentLink/resolve
-
+local shared = require('vim.shared')
 local log = require('lsp.log')
-local util = require('nvim.util')
-local lsp_util = require('lsp.util')
 
-local QuickFix = require('nvim.quickfix_list')
-local LocationList = require('nvim.location_list')
-
-local protocol = require('lsp.protocol')
-local errorCodes = protocol.errorCodes
-
-local handle_completion = require('lsp.handle.completion')
-local handle_workspace = require('lsp.handle.workspace')
-
+-- {
+--   method_name = CallbackObject
+-- }
 local CallbackMapping = setmetatable({}, {})
+
+-- {
+--   common = { CallbackObject },
+--   filetype = { CallbackObject }.
+-- }
 local CallbackObject = {}
-
-local method_to_callback_object = function(method, create_new)
-  if type(method) ~= 'string' then
-    return nil
-  end
-
-  if CallbackMapping[method] == nil and create_new then
-    CallbackMapping[method] = CallbackObject.new(method)
-  end
-
-  return CallbackMapping[method]
-end
-
-local call_callbacks = function(callback_list, success, params)
-  local results = {}
-
-  for key, callback in ipairs(callback_list) do
-    results[key] = callback(success, params)
-  end
-
-  return unpack(results)
-end
-
-local call_callbacks_for_method = function(method, success, data, default_only, filetype)
-  local cb = method_to_callback_object(method, false)
-
-  if cb == nil then
-    log.debug('Unsupported method:', method)
-    return
-  end
-
-  return cb(success, data, default_only, filetype)
-end
-
 
 CallbackObject.__index = function(self, key)
   if CallbackObject[key] ~= nil then
@@ -87,17 +20,48 @@ CallbackObject.__index = function(self, key)
   return rawget(self, key)
 end
 
-CallbackObject.__call = function(self, success, data, default_only, filetype)
-  if self.name ~= 'nvim/error_callback' and not success then
-    call_callbacks_for_method('nvim/error_callback', false, data)
+-- Operation function for CallbackMapping and CallbackObject section
+local get_callback_object_by_method = function(method)
+  if type(method) ~= 'string' then
+    return nil
   end
 
-  if util.table.is_empty(self.default) then
+  if CallbackMapping[method] == nil then
+    CallbackMapping[method] = CallbackObject.new(method)
+  end
+
+  return CallbackMapping[method]
+end
+
+-- @params method
+-- @params success
+-- @params data
+-- @params filetype
+
+-- @return callback result
+local call_callbacks_for_method = function(method, success, data, filetype)
+  local cb = get_callback_object_by_method(method)
+
+  if cb:has_no_callbacks(filetype) then
+    log.debug('Unsupported method:', method)
+    return
+  end
+
+  return cb(success, data, filetype)
+end
+
+-- CallbackObject section
+CallbackObject.__call = function(self, success, data, filetype)
+  if self.name ~= 'nvim/error_callback' and not success then
+    call_callbacks_for_method('nvim/error_callback', data, filetype)
+  end
+
+  if not filetype and shared.tbl_isempty(self.common) then
       log.trace('Request: "', self.method, '" had no registered callbacks')
     return nil
   end
 
-  local callback_list = self:get_list_of_callbacks(default_only, filetype)
+  local callback_list = self:get_list_of_callbacks(filetype)
   local results = { }
 
   for _, cb in ipairs(callback_list) do
@@ -111,7 +75,7 @@ CallbackObject.__call = function(self, success, data, default_only, filetype)
   return unpack(results)
 end
 
-CallbackObject.new = function(method, default_callback, options)
+CallbackObject.new = function(method, options)
   options = options or {}
 
   local object = setmetatable({
@@ -126,63 +90,63 @@ CallbackObject.new = function(method, default_callback, options)
       end,
     }),
 
-    default = {},
-    generic = {},
+    common = {},
     filetype = {},
   }, CallbackObject)
-
-  if default_callback ~= nil then
-    if type(default_callback) == 'string' then
-      default_callback = function(self, data)
-        return vim.api.nvim_call_function(default_callback, {
-          { method = self.method, options = unpack(options) },
-          data
-        })
-      end
-    end
-
-    object:set_default_callback(default_callback)
-  end
 
   return object
 end
 
-CallbackObject.set_default_callback = function(self, default_callback)
-  self.default = { default_callback }
+CallbackObject.has_no_callbacks = function(self, filetype)
+  return shared.tbl_isempty(self:get_list_of_callbacks(filetype))
 end
 
-CallbackObject.add_callback = function(self, new_callback)
-  table.insert(self.generic, new_callback)
-end
-
-CallbackObject.add_default_callback = function(self, new_callback)
-  table.insert(self.default, new_callback)
+CallbackObject.add_callback = function(self, new_callback, filetype)
+  if filetype then
+    self:add_filetype_callback(new_callback, filetype)
+  else
+    self:add_common_callback(new_callback)
+  end
 end
 
 CallbackObject.add_filetype_callback = function(self, new_callback, filetype)
-  if self.filetype[filetype] == nil then
+  if not self.filetype[filetype] then
     self.filetype[filetype] = {}
   end
 
   table.insert(self.filetype[filetype], new_callback)
 end
 
-CallbackObject.get_list_of_callbacks = function(self, default_only, filetype)
+CallbackObject.add_common_callback = function(self, new_callback)
+  table.insert(self.common, new_callback)
+end
+
+CallbackObject.set_callback = function(self, new_callback, filetype)
+  if filetype then
+    self:set_filetype_callback(new_callback, filetype)
+  else
+    self:set_common_callback(new_callback)
+  end
+end
+
+CallbackObject.set_filetype_callback = function(self, new_callback, filetype)
+  self.filetype[filetype] = {}
+  table.insert(self.filetype[filetype], new_callback)
+end
+
+CallbackObject.set_common_callback = function(self, new_callback)
+  self.common = {}
+  table.insert(self.common, new_callback)
+end
+
+--- Get list of callbacks.
+--- If filetype argument is present and there are specific filetype callbacks, it returns only specific filetype callbacks.
+--- But if filetype argument is present and there aren't any specific filetype callbacks, it returns common callbacks.
+-- @params (optional) filetype string
+CallbackObject.get_list_of_callbacks = function(self, filetype)
   local callback_list = {}
 
-  for _, value in ipairs(self.default) do
-    table.insert(callback_list, value)
-  end
-
-  if default_only then
-    return callback_list
-  end
-
-  for _, value in ipairs(self.generic) do
-    table.insert(callback_list, value)
-  end
-
-  if filetype ~= nil then
+  if filetype then
     if self.filetype[filetype] == nil then
       self.filetype[filetype] = {}
     end
@@ -192,325 +156,46 @@ CallbackObject.get_list_of_callbacks = function(self, default_only, filetype)
     end
   end
 
+  if not filetype or (filetype and callback_list and shared.tbl_isempty(callback_list)) then
+    for _, value in ipairs(self.common) do
+      table.insert(callback_list, value)
+    end
+  end
+
   return callback_list
 end
 
--- Callback definition section
-local add_default_callback = function(name, callback, options)
-  CallbackMapping[name] = CallbackObject.new(name, callback, options)
+local call_callbacks = function(callback_list, success, params)
+  local results = {}
+
+  for key, callback in ipairs(callback_list) do
+    results[key] = callback(success, params)
+  end
+
+  return unpack(results)
 end
 
--- 3 nvim/error_callback
-add_default_callback('nvim/error_callback', function(original, error_message)
-  local message = ''
-  if error_message.message ~= nil and type(error_message.message) == 'string' then
-    message = error_message.message
-  elseif rawget(errorCodes, error_message.code) ~= nil then
-    message = string.format('[%s] %s',
-      error_message.code, errorCodes[error_message.code]
-    )
-  end
-
-  vim.api.nvim_err_writeln(string.format('[LSP:%s] Error: %s', original.method, message))
-
-  return
-end)
-
--- 3 textDocument/publishDiagnostics
-add_default_callback('textDocument/publishDiagnostics', function(self, data)
-  local diagnostic_list
-  if self.options.use_quickfix then
-    diagnostic_list = QuickFix:new('Language Server Diagnostics')
-  else
-    diagnostic_list = LocationList:new('Language Server Diagnostics')
-  end
-
-  for _, diagnostic in ipairs(data.diagnostics) do
-    local range = diagnostic.range
-    local severity = diagnostic.severity or protocol.DiagnosticSeverity.Information
-
-    local message_type
-    if severity == protocol.DiagnosticSeverity.Error then
-      message_type = 'E'
-    elseif severity == protocol.DiagnosticSeverity.Warning then
-      message_type = 'W'
-    else
-      message_type = 'I'
-    end
-
-    -- local code = diagnostic.code
-    local source = diagnostic.source or 'lsp'
-    local message = diagnostic.message
-
-    diagnostic_list:add(
-      range.start.line + 1,
-      range.start.character + 1,
-      '[' .. source .. ']' .. message,
-      lsp_util.get_filename(data.uri),
-      message_type
-    )
-  end
-
-  diagnostic_list:set()
-
-  if diagnostic_list:len() == 0 then
-    diagnostic_list:close()
-  elseif self.options.auto_list then
-    diagnostic_list:open()
-  end
-
-  return
-end, {
-  auto_list = false,
-  use_quickfix = false,
-})
-
--- 3 textDocument/completion
-add_default_callback('textDocument/completion', function(self, data)
-  if data == nil then
-    print(self)
-    return
-  end
-
-  return handle_completion.getLabels(data)
-end)
-
--- 3 textDocument/references
-add_default_callback('textDocument/references', function(self, data)
-  local locations = data
-  local loclist = {}
-
-  for _, loc in ipairs(locations) do
-    -- TODO: URL parsing here?
-    local start = loc.range.start
-    local line = start.line + 1
-    local character = start.character + 1
-
-    local path = util.handle_uri(loc["uri"])
-    local text = lsp_util.get_line_from_path(path, line)
-
-    table.insert(loclist, {
-        filename = path,
-        lnum = line,
-        col = character,
-        text = text,
-    })
-  end
-
-  local result = vim.api.nvim_call_function('setloclist', {0, loclist, ' ', 'Language Server textDocument/references'})
-
-  if self.options.auto_location_list then
-    if loclist ~= {} then
-      if not util.is_loclist_open() then
-        vim.api.nvim_command('lopen')
-        vim.api.nvim_command('wincmd p')
-      end
-    else
-      vim.api.nvim_command('lclose')
-    end
-  end
-
-  return result
-end, { auto_location_list = true })
-
--- 3 textDocument/rename
-add_default_callback('textDocument/rename', function(self, data)
-  if data == nil then
-    print(self)
-    return nil
-  end
-
-  vim.api.nvim_set_var('textDocument_rename', data)
-
-  handle_workspace.apply_WorkspaceEdit(data)
-end, { })
-
--- 3 textDocument/hover
-add_default_callback('textDocument/hover', function(self, data)
-  log.trace('textDocument/hover', data, self)
-
-  if data.range ~= nil then
-    -- Doesn't handle multi-line highlights
-    local _ = vim.api.nvim_buf_add_highlight(0,
-      -1,
-      'Error',
-      data.range.start.line,
-      data.range.start.character,
-      data.range['end'].character
-    )
-  end
-
-  -- TODO: Use floating windows when they become available
-  local long_string = ''
-  if data.contents ~= nil then
-    if util.is_array(data.contents) == true then
-      for i, item in ipairs(data.contents) do
-        local value
-        if type(item) == 'table' then
-          value = item.value
-        elseif item == nil then
-          value = ''
-        else
-          value = item
-        end
-
-        if i == 1 then
-          long_string = value
-        else 
-          long_string = long_string .. "\n" .. value
-        end
-      end
-
-      log.debug('Hover: ', long_string)
-    elseif type(data.contents) == 'table' then
-      long_string = long_string .. (data.contents.value or '')
-    else
-      long_string = data.contents
-    end
-
-    if long_string == '' then
-      long_string = 'LSP: No information available'
-    end
-
-    vim.api.nvim_out_write(long_string .. '\n')
-    return long_string
-  end
-end)
-
--- 3 textDocument/definition
-add_default_callback('textDocument/definition', function(self, data)
-  log.trace('callback:textDocument/definiton', data, self)
-
-  if data == nil or data == {} then
-    log.info('No definition found')
-    return nil
-  end
-
-  local current_file = vim.api.nvim_call_function('expand', {'%'})
-
-  -- We can sometimes get a list of locations,
-  -- so set the first value as the only value we want to handle
-  if data[1] ~= nil then
-    data = data[1]
-  end
-
-  if data.uri == nil then
-    vim.api.nvim_err_writeln('[LSP] Could not find a valid definition')
-    return
-  end
-
-  if type(data.uri) ~= 'string' then
-    vim.api.nvim_err_writeln('Invalid uri')
-    return
-  end
-
-  local data_file = lsp_util.get_filename(data.uri)
-
-  if data_file ~= lsp_util.get_uri(current_file) then
-    vim.api.nvim_command('silent edit ' .. data_file)
-  end
-
-  vim.api.nvim_command(
-    string.format('normal! %sG%s|'
-      , data.range.start.line + 1
-      , data.range.start.character + 1
-    )
-  )
-
-  return true
-end)
-
-
--- 2 window
--- 3 window/showMessage
-add_default_callback('window/showMessage', function(self, data)
-  if data == nil or type(data) ~= 'table' then
-    print(self)
-    return nil
-  end
-
-  local message_type = data['type']
-  local message = data['message']
-
-  if message_type == protocol.MessageType.Error then
-    -- Might want to not use err_writeln,
-    -- but displaying a message with red highlights or something
-    vim.api.nvim_err_writeln(message)
-  else
-    vim.api.nvim_out_write(message .. "\n")
-  end
-
-  return data
-end, { })
-
--- 3 window/showMessageRequest
--- TODO: Should probably find some unique way to handle requests from server -> client
-add_default_callback('window/showMessageRequest', function(self, data)
-  if data == nil or type(data) ~= 'table' then
-    print(self)
-    return nil
-  end
-
-  local message_type = data['type']
-  local message = data['message']
-  local actions = data['actions']
-
-  print(message_type, message, actions)
-end, { })
-
--- 2 workspace
--- 3 workspace/symbol
--- TODO: Find a server that supports this request, and also figure out workspaces :)
--- add_default_callback('workspace/symbol', function(self, data)
---   print(self, data)
--- end, { })
-
-
---- Get a list of callbacks for a particular circumstance
--- @param method                (required) The name of the method to get the callbacks for
--- @param callback_parameter    (optional) If passed, will only execute this callback
--- @param default_only          (optional) If passed, will only execute the default. Overridden by callback_parameter
--- @param filetype              (optional) If passed, will execute filetype specific callbacks as well
-local get_list_of_callbacks = function(method, callback_parameter, default_only, filetype)
-  -- If they haven't passed a callback parameter, then fill with a default
-  local cb = nil
-  if callback_parameter == nil then
-    cb = method_to_callback_object(method)
-  elseif type(callback_parameter) == 'table' then
-    cb = CallbackObject.new(method)
-
-    for _, value in pairs(callback_parameter) do
-      cb:add_default_callback(value)
-    end
-  elseif type(callback_parameter) == 'function' then
-    cb = CallbackObject.new(method, callback_parameter)
-  elseif type(callback_parameter) == 'string' then
-    -- When we pass a string, that's a VimL function that we want to call
-    -- so we create a callback function to run it.
-    --
-    --      See: |lsp#request()|
-    cb = CallbackObject.new(method, callback_parameter)
-  end
-
-  if cb == nil then return {} end
-
-  return cb:get_list_of_callbacks(default_only, filetype)
+local add_callback = function(method, new_callback, filetype)
+  get_callback_object_by_method(method):add_callback(new_callback, filetype)
 end
 
-local set_default_callback = function(method, new_default_callback)
-  method_to_callback_object(method, true):set_default_callback(new_default_callback)
-end
-
-local add_callback = function(method, new_callback)
-  method_to_callback_object(method, true):add_callback(new_callback)
-end
-
-local add_filetype_callback = function(method, new_callback, filetype)
-  method_to_callback_object(method, true):add_filetype_callback(new_callback, filetype)
+local set_callback = function(method, new_callback, filetype)
+  get_callback_object_by_method(method):set_callback(new_callback, filetype)
 end
 
 local set_option = function(method, option, value)
-  method_to_callback_object(method).options[option] = value
+  get_callback_object_by_method(method).options[option] = value
+end
+
+--- Get a list of callbacks for a particular circumstance
+-- @param method                (required) The name of the method to get the callbacks for
+-- @param filetype              (optional) If passed, will execute filetype specific callbacks as well
+local get_list_of_callbacks = function(method, filetype)
+  local cb = get_callback_object_by_method(method)
+
+  if cb == nil then return {} end
+
+  return cb:get_list_of_callbacks(filetype)
 end
 
 return {
@@ -518,9 +203,8 @@ return {
   call_callbacks_for_method = call_callbacks_for_method,
 
   -- Configuring callback objects
-  set_default_callback = set_default_callback,
   add_callback = add_callback,
-  add_filetype_callback = add_filetype_callback,
+  set_callback = set_callback,
   set_option = set_option,
 
   -- Generally private functions

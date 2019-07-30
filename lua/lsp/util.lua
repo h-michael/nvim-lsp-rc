@@ -2,17 +2,15 @@ local util = require('nvim.util')
 
 local lsp_util = {}
 
-lsp_util.get_filetype = function(filetype)
-  if not filetype then
-    filetype = vim.api.nvim_buf_get_option(0, 'filetype')
-  end
-
-  return filetype
+lsp_util.get_filetype = function(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_bufnr()
+  return vim.api.nvim_buf_get_option(bufnr, 'filetype')
 end
 
 lsp_util.get_uri = function(filename)
   return 'file://' .. filename
 end
+
 
 lsp_util.get_filename = function(uri)
   -- TODO: Can't remember if this is the best way
@@ -29,8 +27,8 @@ end
 
 lsp_util.get_line_from_path = function(path, line_number)
   local buf_number = vim.api.nvim_call_function('bufnr', { path })
+  local text
 
-  local text = ''
   if buf_number == -1 then
     text = util.get_file_line(path, line_number)
   else
@@ -44,5 +42,33 @@ lsp_util.get_line_from_path = function(path, line_number)
   return text
 end
 
+-- Line position in a document (zero-based).
+lsp_util.get_line = function()
+  return vim.api.nvim_call_function('line', { '.' }) - 1
+end
+
+-- Character offset on a line in a document (zero-based). Assuming that the line is
+-- represented as a string, the `character` value represents the gap between the
+-- `character` and `character + 1`.
+-- If the character value is greater than the line length it defaults back to the
+-- line length.
+lsp_util.get_character = function()
+  return vim.api.nvim_call_function('col', { '.' }) - 1
+end
+
+lsp_util.get_position = function()
+  return {line = lsp_util.get_line(), character = lsp_util.get_character()}
+end
+
+-- Text documents are identified using a URI.
+-- On the protocol level, URIs are passed as strings.
+-- The corresponding JSON structure.
+lsp_util.get_text_document_identifier = function()
+  local filename = vim.api.nvim_call_function('expand', { '<afile>:p' })
+  if not filename then
+    filename = vim.api.nvim_call_function('expand', { '%:p' })
+  end
+  return { url = filename }
+end
 
 return lsp_util

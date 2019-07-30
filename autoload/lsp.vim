@@ -9,14 +9,14 @@ catch
   finish
 endtry
 
-let s:client_string = "require('lsp.plugin').client"
+let s:lsp_plugin = "require('lsp.plugin')"
 
 function! lsp#start(...) abort
   let start_filetype = get(a:000, 0, &filetype)
   let force = get(a:000, 1, v:false)
 
-  if force || !luaeval(s:client_string . '.has_started(_A)', start_filetype)
-    call luaeval(s:client_string . '.start(nil, _A).name', start_filetype)
+  if force || !luaeval(s:lsp_plugin . '.has_started(_A)', start_filetype)
+    call luaeval(s:lsp_plugin . '.start_client(nil, _A).name', start_filetype)
     " call lsp#api_exec('client.start(nil, "%s")', start_filetype)
   else
     echom '[LSP] Client for ' . start_filetype . ' has already started'
@@ -25,16 +25,19 @@ endfunction
 
 " TODO(tjdevries): Make sure this works correctly
 " TODO(tjdevries): Figure out how to call a passed callback
-function! lsp#request(request, ...) abort
-  let arguments = get(a:000, 0, {})
-  let optional_callback = get(a:000, 1, v:null)
-  let filetype = get(a:000, 2, v:null)
+function! lsp#request(method, ...) abort
+  let params = get(a:000, 0, {})
+  let filetype = get(a:000, 1, &filetype)
+  let bufnr = get(a:000, 2, v:null)
+  let optional_callback = get(a:000, 3, v:null)
 
-  let request_id = luaeval(s:client_string . '.request(_A.request, _A.arguments, _A.callback, _A.filetype)', {
-          \ 'request': a:request,
-          \ 'arguments': arguments,
-          \ 'callback': optional_callback,
+  let result = luaeval(s:lsp_plugin . '.request(_A.method, _A.params, _A.filetype, _A.bufnr, _A.callback)', {
+          \ 'method': a:method,
+          \ 'params': params,
           \ 'filetype': filetype,
+          \ 'bufnr': bufnr,
+          \ 'filetype': filetype,
+          \ 'callback': optional_callback,
         \ })
 
   return request_id
@@ -44,19 +47,35 @@ endfunction
 " Async request to the lsp server.
 "
 " Do not wait until completion
-function! lsp#request_async(request, ...) abort
-  let arguments = get(a:000, 0, {})
-  let optional_callback = get(a:000, 1, v:null)
-  let filetype = get(a:000, 2, v:null)
+function! lsp#request_async(method, ...) abort
+  let params = get(a:000, 0, {})
+  let filetype = get(a:000, 1, v:null)
+  let bufnr = get(a:000, 2, v:null)
+  let optional_callback = get(a:000, 3, v:null)
 
-  let result = luaeval(s:client_string . '.request_async(_A.request, _A.arguments, _A.callback, _A.filetype)', {
-          \ 'request': a:request,
-          \ 'arguments': arguments,
-          \ 'callback': optional_callback,
+  let result = luaeval(s:lsp_plugin . '.request_async(_A.method, _A.params, _A.filetype, _A.bufnr, _A.callback)', {
+          \ 'method': a:method,
+          \ 'params': params,
           \ 'filetype': filetype,
+          \ 'bufnr': bufnr,
+          \ 'filetype': filetype,
+          \ 'callback': optional_callback,
         \ })
 
   return result
+endfunction
+
+""
+" Notify to the lsp server.
+function! lsp#notify(method, ...) abort
+  let params = get(a:000, 0, {})
+  let filetype = get(a:000, 1, &filetype)
+
+  luaeval(s:lsp_plugin . '.notify(_A.method, _A.params, _A.filetype)', {
+          \ 'method': a:method,
+          \ 'params': params,
+          \ 'filetype': filetype,
+        \ })
 endfunction
 
 ""
@@ -67,14 +86,13 @@ function! lsp#handle(request, data, ...) abort abort
   let default_only = get(a:000, 1, v:true)
 
   " and then calls it with the provided data
-  return luaeval(s:client_string . '.handle(_A.filetype, _A.method, _A.data, _A.default_only)', {
+  return luaeval(s:lsp_plugin . '.handle(_A.filetype, _A.method, _A.data, _A.default_only)', {
         \ 'filetype': file_type,
         \ 'method': a:request,
         \ 'data': a:data,
         \ 'default_only': default_only,
         \ })
 endfunction
-
 
 ""
 " Private functions to manage language server.
@@ -90,7 +108,7 @@ function s:LspClient.on_exit(job_id, data, event) abort
   call luaeval("require('lsp.client').job_exit(_A.id, _A.data)", {'id': a:job_id, 'data': a:data})
 endfunction
 
-function lsp#__jobstart(cmd) abort
+function! lsp#__jobstart(cmd) abort
   let to_execute = ''
   if type(a:cmd) == v:t_string
     let to_execute = split(a:cmd, ' ', 0)[0]
@@ -105,7 +123,6 @@ function lsp#__jobstart(cmd) abort
     echoerr '"' to_execute '" is not a valid executable'
     throw LSP/BadConfig
   endif
-
 
   let job_id = jobstart(a:cmd, s:LspClient)
 

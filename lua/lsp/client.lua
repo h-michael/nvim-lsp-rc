@@ -1,14 +1,11 @@
--- luacheck: globals vim
-
 local json = require('lsp.json')
 local util = require('nvim.util')
+local shared = require('vim.shared')
 
 local Enum = require('nvim.meta').Enum
 local EmptyDictionary = require('nvim.meta').EmptyDictionary
 
 local message = require('lsp.message')
-local initialize_filetype_autocmds = require('lsp.autocmds').initialize_filetype_autocmds
-local lsp_doautocmd = require('lsp.autocmds').lsp_doautocmd
 local call_callbacks_for_method = require('lsp.callbacks').call_callbacks_for_method
 local should_send_message = require('lsp.checks').should_send
 
@@ -25,7 +22,6 @@ local error_level = Enum:new({
   reset_state = 1,
   info = 2,
 })
-
 
 local ActiveJobs = {}
 
@@ -98,18 +94,12 @@ client.new = function(name, ft, cmd)
 end
 
 client.initialize = function(self)
-  -- Initialize autocmd for filetypes == self.ft
-  --    These will create buffer local autocmds in each buffer
-  initialize_filetype_autocmds(self.ft)
-
-  local result = self:request_async('initialize', nil, function(_, data)
+  local result = self:request_async('initialize', nil, nil, function(_, data)
+    self:notify('initialized')
+    self:notify('textDocument/didOpen')
     self.capabilities =  EmptyDictionary:new(data.capabilities)
     return data.capabilities
   end)
-
-  -- Open the document for the language server.
-  -- We only send this automatically on starting the server.
-  self:request_async('textDocument/didOpen')
 
   return result
 end
@@ -128,12 +118,14 @@ end
 -- @param params: the parameters to send
 -- @param cb (optional): If sent, will call this when it's done
 --                          otherwise it'll wait til the client is done
-client.request = function(self, method, params, cb)
+client.request = function(self, method, params, bufnr, cb)
   if not method then
+    error("No request method supplied", 2)
     return nil
   end
 
-  local request_id = self:request_async(method, params, cb)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  local request_id = self:request_async(method, params, bufnr, cb)
 
   -- local later = os.time() + require('lsp.conf.request').timeout
   local later = os.time() + 10
@@ -153,18 +145,19 @@ end
 -- If a callback is passed,
 --  it will be registered to run when the response is received.
 --
--- It will also issue autocommands in Vim so that other plugins can do things on LSP actions.
---  For example, when sending the request: 'textDocument/hover',
---  it will send:
---      LSP/textDocument/hover/pre
---      LSP/textDocument/hover/post
---
 -- @param method (string|table) : The identifier for the type of message that is being requested
 -- @param params (table)        : Optional parameters to pass to override default parameters for a request
 -- @param cb     (function)     : An optional function pointer to call once the request has been completed
 --                                  If a string is passed, it will execute a VimL funciton of that name
 --                                  To disable handling the request, pass "false"
-client.request_async = function(self, method, params, cb)
+client.request_async = function(self, method, params, bufnr, cb)
+  if not method then
+    error("No request method supplied", 2)
+    return nil
+  end
+
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+
   if self.job_id == nil then
     log.warn('Client does not have valid job_id: ', self.name)
     return nil
@@ -181,15 +174,13 @@ client.request_async = function(self, method, params, cb)
     self._callbacks[req.id] = {
       cb = cb,
       method = req.method,
+      bufnr = bufnr,
     }
   end
 
-
   if should_send_message(self, req) then
-    lsp_doautocmd(method, 'pre')
     log.debug("Sending Request: [["..req:data().."]]")
     vim.api.nvim_call_function('chansend', {self.job_id, req:data()})
-    lsp_doautocmd(method, 'post')
   else
     log.debug(string.format('Request "%s" was cancelled with params %s', method, util.tostring(params)))
   end
@@ -201,7 +192,23 @@ end
 -- @param method: Name of the LSP method
 -- @param params: the parameters to send
 client.notify = function(self, method, params)
-  self:request_async(method, params)
+  if self.job_id == nil then
+    log.warn('Client does not have valid job_id: ', self.name)
+    return nil
+  end
+
+  local notification = message.NotificationMessage:new(self, method, params)
+
+  if notification == nil then
+    return nil
+  end
+
+  if should_send_message(self, notification) then
+    log.debug("Sending Notification: [["..notification:data().."]]")
+    vim.api.nvim_call_function('chansend', {self.job_id, notification:data()})
+  else
+    log.debug(string.format('Notification "%s" was cancelled with params %s', method, util.tostring(params)))
+  end
 end
 
 --- Parse an LSP Message's header
@@ -211,15 +218,15 @@ client._parse_header = function(header)
     return nil, nil
   end
 
-  local lines = util.split(header, '\\r\\n')
+  local lines = shared.split(header, '\\r\\n', true)
 
   local split_lines = {}
 
   for _, line in pairs(lines) do
     if line ~= '' then
-      local temp_lines = util.split(line, ':')
+      local temp_lines = shared.split(line, ':', true)
       for t_index, t_line in pairs(temp_lines) do
-        temp_lines[t_index] = util.trim(t_line)
+        temp_lines[t_index] = shared.trim(t_line)
       end
 
       split_lines[temp_lines[1]:lower():gsub('-', '_')] = temp_lines[2]
@@ -320,8 +327,7 @@ client.on_message = function(self, json_message)
   -- Handle notifications
   if json_message.method and json_message.params then
     log.debug('notification: ', json_message.method)
-    call_callbacks_for_method(json_message.method, true, json_message.params)
-    lsp_doautocmd(json_message.method, 'notification')
+    call_callbacks_for_method(json_message.method, true, json_message.params, nil)
 
     return
   -- Handle responses
@@ -331,12 +337,11 @@ client.on_message = function(self, json_message)
     local success = not json_message['error']
     local data = json_message['error'] or json_message.result or {}
 
-    lsp_doautocmd(method, 'response')
     local result
     if cb then
       result = { cb(success, data) }
     else
-      result = { call_callbacks_for_method(method, success, data) }
+      result = { call_callbacks_for_method(method, success, data, nil) }
     end
 
     -- Clear the old callback

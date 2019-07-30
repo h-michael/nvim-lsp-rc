@@ -1,5 +1,3 @@
--- luacheck: globals vim
-
 -- Register requests
 -- Default requests
 -- Override requests
@@ -18,9 +16,8 @@
 --
 --          @returns (table): The resulting params for the request
 
-local nvim_util = require('nvim.util')
-
-local server_config = require('lsp.server')
+local shared = require('vim.shared')
+local server_config = require('lsp.server_config')
 local structures = require('lsp.structures')
 
 local requests = {
@@ -128,30 +125,6 @@ requests.textDocument.references = function(client, params)
   return structures.ReferenceParams(params), true
 end
 
-requests.textDocument.didOpen = function(client, params)
-  return structures.DidOpenTextDocumentParams(params), true
-end
-
-requests.textDocument.willSave = function(client, params)
-  if not client.capabilities.synchronization.willSave then
-    return nil, false
-  end
-
-  return structures.WillSaveTextDocumentParams(params), true
-end
-
-requests.textDocument.didSave = function(client, params)
-  if not client.capabilities.synchronization.didSave then
-    return nil, false
-  end
-
-  return structures.DidSaveTextDocumentParams(params), true
-end
-
-requests.textDocument.didChange = function(client, params)
-  return structures.DidChangeTextDocumentParams(params), true
-end
-
 requests.textDocument.completion = function(client, params)
   if not client.capabilities.completionProvider then
     return nil, false
@@ -195,7 +168,7 @@ end
 local get_request_function = function(method)
   local method_table
   if type(method) == 'string' then
-    method_table = nvim_util.split(method, '/')
+    method_table = shared.split(method, '/', true)
   elseif type(method) == 'table' then
     method_table = method
   else
