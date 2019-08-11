@@ -1,11 +1,12 @@
 -- luacheck: globals vim
 
 vim.lsp = {
-  client = require('lsp.plugin').client,
-  server = {
-    add = require('lsp.server').add,
+  plugin = require('lsp.plugin'),
+  server_config = {
+    add = require('lsp.server_config').add,
   },
   config = require('lsp.config'),
+  structures = require('lsp.structures'),
 }
 
 return vim.lsp

@@ -9,13 +9,13 @@ catch
   finish
 endtry
 
-let s:lsp_plugin = "require('lsp.plugin')"
+let s:lsp_plugin = "require('lsp.api').plugin"
 
 function! lsp#start(...) abort
   let start_filetype = get(a:000, 0, &filetype)
   let force = get(a:000, 1, v:false)
 
-  if force || !luaeval(s:lsp_plugin . '.has_started(_A)', start_filetype)
+  if force || !luaeval(s:lsp_plugin . '.client_has_started(_A)', start_filetype)
     call luaeval(s:lsp_plugin . '.start_client(nil, _A).name', start_filetype)
     " call lsp#api_exec('client.start(nil, "%s")', start_filetype)
   else
@@ -31,13 +31,12 @@ function! lsp#request(method, ...) abort
   let bufnr = get(a:000, 2, v:null)
   let optional_callback = get(a:000, 3, v:null)
 
-  let result = luaeval(s:lsp_plugin . '.request(_A.method, _A.params, _A.filetype, _A.bufnr, _A.callback)', {
+  let result = luaeval(s:lsp_plugin . '.request(_A.method, _A.params, _A.filetype, _A.callback, _A.bufnr)', {
           \ 'method': a:method,
           \ 'params': params,
           \ 'filetype': filetype,
-          \ 'bufnr': bufnr,
-          \ 'filetype': filetype,
           \ 'callback': optional_callback,
+          \ 'bufnr': bufnr,
         \ })
 
   return request_id
@@ -53,13 +52,12 @@ function! lsp#request_async(method, ...) abort
   let bufnr = get(a:000, 2, v:null)
   let optional_callback = get(a:000, 3, v:null)
 
-  let result = luaeval(s:lsp_plugin . '.request_async(_A.method, _A.params, _A.filetype, _A.bufnr, _A.callback)', {
+  let result = luaeval(s:lsp_plugin . '.request_async(_A.method, _A.params, _A.filetype, _A.callback, _A.bufnr)', {
           \ 'method': a:method,
           \ 'params': params,
           \ 'filetype': filetype,
-          \ 'bufnr': bufnr,
-          \ 'filetype': filetype,
           \ 'callback': optional_callback,
+          \ 'bufnr': bufnr,
         \ })
 
   return result
@@ -101,11 +99,11 @@ endfunction
 let s:LspClient = {}
 
 function s:LspClient.on_stdout(job_id, data, event) abort
-  call luaeval("require('lsp.client').job_stdout(_A.id, _A.data)", {'id': a:job_id, 'data': a:data})
+  call luaeval("require('lsp.api').plugin.client_job_stdout(_A.id, _A.data)", {'id': a:job_id, 'data': a:data})
 endfunction
 
 function s:LspClient.on_exit(job_id, data, event) abort
-  call luaeval("require('lsp.client').job_exit(_A.id, _A.data)", {'id': a:job_id, 'data': a:data})
+  call luaeval("require('lsp.api').plugin.client_job_exit(_A.id, _A.data)", {'id': a:job_id, 'data': a:data})
 endfunction
 
 function! lsp#__jobstart(cmd) abort
